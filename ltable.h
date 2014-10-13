@@ -5,7 +5,7 @@
 
 struct ltable;
 
-void  ltable_init(struct ltable *t, size_t nodememsz, unsigned int seed);
+struct ltable*  ltable_create(size_t vmemsz, unsigned int seed);
 void  ltable_release(struct ltable *);
 
 void* ltable_strget(struct ltable* t, const char* key);
