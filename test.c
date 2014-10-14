@@ -5,19 +5,23 @@ static void
 _dump(struct ltable *t) {
     unsigned int i = 0;
     int *p;
-    struct ltable_key *kp = NULL;
+    struct ltable_key kp;
     while (p = ltable_next(t, &i, &kp)) {
-        switch (kp->type) {
+        switch (kp.type) {
         case LTABLE_KEYNUM:
-            printf("key=%.3f, val=%d\n", kp->v.f, *p);
+            printf("key=%.3f, val=%d\n", kp.v.f, *p);
             break;
         case LTABLE_KEYINT:
-            printf("key=%d, val=%d\n", kp->v.i, *p);
+            printf("key=%d, val=%d\n", kp.v.i, *p);
             break;
         case LTABLE_KEYSTR:
-            printf("key=[%s], val=%d\n", kp->v.s, *p);
-        default:                /* LTABLE_KEYOBJ */
-            printf("key=[%p], val=%d\n", kp->v.p, *p);
+            printf("key=['%s'], val=%d\n", kp.v.s, *p);
+            break;
+        case LTABLE_KEYOBJ:
+            printf("key=[%p], val=%d\n", kp.v.p, *p);
+            break;
+        default :
+            printf("error type %d\n", kp.type);
         }
     }
     printf("===========\n");
@@ -29,13 +33,13 @@ main() {
     struct ltable* t = ltable_create(sizeof(int), 0);
     int *p;
 
-    /* /\* t["foo"] = 12 *\/ */
-    /* p = ltable_set(t, ltable_strkey(&key, "foo"));  */
-    /* *p = 12; */
+    /* t["foo"] = 12 */
+    p = ltable_set(t, ltable_strkey(&key, "foo"));
+    *p = 12;
 
-    /* /\* t[3.5] = 13 *\/ */
-    /* p = ltable_set(t, ltable_numkey(&key, 3.5)); */
-    /* *p = 13; */
+    /* t[3.5] = 13 */
+    p = ltable_set(t, ltable_numkey(&key, 3.5));
+    *p = 13;
 
     /* t[1] = 14 */
     p = ltable_set(t, ltable_intkey(&key, 1));

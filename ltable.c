@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <string.h>
 #include <assert.h>
+#include <stdio.h>
 
 #include "ltable.h"
 
@@ -146,6 +147,9 @@ pool_release(struct pool *p) {
 static void
 _rehash(struct ltable* t, const struct ltable_key *ek);
 
+static struct ltable_value *
+_set(struct ltable* t, const struct ltable_key *key);
+
 int
 _ceillog2 (unsigned int x) {
   static const unsigned char log_2[256] = {
@@ -254,7 +258,7 @@ static struct ltable_node*
 _getfreepos(struct ltable* t) {
     while (t->lastfree > t->node) {
         t->lastfree--;
-        if (!isnil(t->lastfree->value))
+        if (isnil(t->lastfree->value))
             return t->lastfree;
     }
     return NULL;  /* could not find a free place */
@@ -285,42 +289,45 @@ _get(struct ltable* t, const struct ltable_key * key) {
 }
 
 static struct ltable_value *
+_hashset(struct ltable* t, const struct ltable_key *key) {
+    struct ltable_node *mp = mainposition(t, key);
+    if (!isnil(mp->value)){      /* main position is taken? */
+        struct ltable_node *othern;
+        struct ltable_node *freen = _getfreepos(t);
+        if (!freen) {
+            _rehash(t, key);
+            return _set(t, key);
+        }
+        othern = mainposition(t, &mp->key);
+        if (othern != mp) { /* is colliding node out of its main position? */
+            /* yes; move colliding node into free position */
+            while (gnext(othern) != mp)
+                othern = gnext(othern); /* find previous */
+            gnext(othern) = freen;
+            *freen = *mp; /* copy colliding node into free pos. (mp->next also goes) */
+            gnext(mp) = NULL;
+        }
+        else { /* colliding node is in its own main position */
+            /* new node will go into free position */
+            gnext(freen) = gnext(mp);
+            gnext(mp) = freen;
+            mp = freen;
+        }
+    }
+    _cpykey(t, &mp->key, key);
+    mp->value.setted = true;
+    return &mp->value;
+}
+
+static struct ltable_value *
 _set(struct ltable* t, const struct ltable_key *key) {
-    struct ltable_value *val;
     int idx = arrayindex(key);
     if (inarray(t, idx)) {  /* in array part? */
-        val = &t->array[idx];
+        t->array[idx].setted = true;
+        return &t->array[idx];
     } else {
-        struct ltable_node *mp = mainposition(t, key);
-        if (!isnil(mp->value)){      /* main position is taken? */
-            struct ltable_node *othern;
-            struct ltable_node *freen = _getfreepos(t);
-            if (!freen) {
-                _rehash(t, key);
-                return _set(t, key);
-            }
-            othern = mainposition(t, &mp->key);
-            if (othern != mp) { /* is colliding node out of its main position? */
-                /* yes; move colliding node into free position */
-                while (gnext(othern) != mp)
-                    othern = gnext(othern); /* find previous */
-                gnext(othern) = freen;
-                *freen = *mp; /* copy colliding node into free pos. (mp->next also goes) */
-                gnext(mp) = NULL;
-            }
-            else { /* colliding node is in its own main position */
-                /* new node will go into free position */
-                gnext(freen) = gnext(mp);
-                gnext(mp) = freen;
-                mp = freen;
-            }
-        }
-        _cpykey(t, &mp->key, key);
-        val = &mp->value;
+        return _hashset(t, key);
     }
-
-    val->setted = true;
-    return val;
 }
 
 /*
@@ -345,7 +352,7 @@ computesizes (int nums[], int *narray) {
         }
         if (a == *narray) break;  /* all elements already counted */
     }
-    *narray = n;
+    *narray = n+1;
     assert(*narray/2 <= na && na <= *narray);
     return na;
 }
@@ -354,8 +361,8 @@ computesizes (int nums[], int *narray) {
 static int
 countint (const struct ltable_key *key, int *nums) {
     int k = arrayindex(key);
-    if (0 <= k && k <= MAXASIZE) {  /* is `key' an appropriate array index? */
-        nums[k==0 ? 0 : _ceillog2(k)]++;  /* count as such */
+    if (0 < k && k <= MAXASIZE) {  /* is `key' an appropriate array index? */
+        nums[_ceillog2(k)]++;  /* count as such */
         return 1;
     }
     else
@@ -367,7 +374,7 @@ numusearray (const struct ltable *t, int *nums) {
     int lg;
     int ttlg;  /* 2^lg */
     int ause = 0;  /* summation of `nums' */
-    int i = 0;  /* count to traverse all array keys. 0-based */
+    int i = 1;  /* count to traverse all array keys. 0-based */
     for (lg=0, ttlg=1; lg<=MAXBITS; lg++, ttlg*=2) {  /* for each slice */
         int lc = 0;  /* counter */
         int lim = ttlg;
@@ -377,8 +384,8 @@ numusearray (const struct ltable *t, int *nums) {
                 break;  /* no more elements to count */
         }
         /* count elements in range (2^(lg-1), 2^lg] */
-        for (; i < lim; i++) {
-            if (!isnil(t->array[i]))
+        for (; i <= lim; i++) {
+            if (!isnil(t->array[i-1]))
                 lc++;
         }
         nums[lg] += lc;
@@ -433,7 +440,7 @@ _resize(struct ltable *t, int nasize, int nhsize) {
             if (!isnil(t->array[i])) {
                 struct ltable_key nkey;
                 ltable_intkey(&nkey, i);
-                struct ltable_value *val = _set(t, &nkey);
+                struct ltable_value *val = _hashset(t, &nkey);
                 *val = t->array[i];
             }
         }
@@ -543,26 +550,25 @@ ltable_del(struct ltable* t, const struct ltable_key* key) {
 }
 
 void *
-ltable_next(struct ltable *t, unsigned int *ip, struct ltable_key **keyp) {
+ltable_next(struct ltable *t, unsigned int *ip, struct ltable_key *key) {
     int nsz = sizenode(t);
     struct ltable_value * val = NULL;
-    if (keyp) *keyp = NULL;
 
     for (;*ip < t->sizearray; (*ip)++) { /* search array part */
         if (!isnil(t->array[*ip])) {
             val = &t->array[*ip];
-            if (keyp) {
-                (*keyp)->type = LTABLE_KEYINT;
-                (*keyp)->v.i = *ip;
+            if (key) {
+                key->type = LTABLE_KEYINT;
+                key->v.i = *ip;
             }
             break;
         }
     }
     if (*ip >= t->sizearray)
-        for ((*ip) -= t->sizearray ; *ip < nsz; (*ip)++) { /* search hash part */
-            struct ltable_node * node = &t->node[*ip];
+        for (;*ip < nsz + t->sizearray; (*ip)++) { /* search hash part */
+            struct ltable_node * node = &t->node[*ip - t->sizearray];
             if (!isnil(node->value)) {
-                if (keyp) *keyp = &node->key;
+                if (key) *key = node->key;
                 val = &node->value;
                 break;
             }
@@ -596,7 +602,7 @@ ltable_intkey(struct ltable_key *key, long int k) {
 }
 
 inline struct ltable_key*
-ltable_objkey(struct ltable_key *key, void *p) {
+ltable_objkey(struct ltable_key *key, const void *p) {
     key->type = LTABLE_KEYOBJ;
     key->v.p  = p;
     return key;

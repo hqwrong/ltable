@@ -28,7 +28,7 @@ struct ltable;
 struct ltable*  ltable_create(size_t vmemsz, unsigned int seed);
 void  ltable_release(struct ltable *);
 void  ltable_resize(struct ltable *t, int nasize, int nhsize);
-void* ltable_next(struct ltable *t, unsigned int *ip, struct ltable_key **keyp);
+void* ltable_next(struct ltable *t, unsigned int *ip, struct ltable_key *key);
 
 void* ltable_get(struct ltable* t, const struct ltable_key* key);
 void* ltable_set(struct ltable* t, const struct ltable_key* key);
