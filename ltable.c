@@ -4,12 +4,13 @@
 #include <string.h>
 #include <assert.h>
 
+#include "ltable.h"
+
 #define SHORTSTR_LEN 128
 
 struct pool_node {
     size_t nodesz;
     struct pool_node *next;
-    struct pool_node *prev;
 };
 
 struct pool {
@@ -23,22 +24,17 @@ struct pool {
 /* use at most ~(2^LUAI_HASHLIMIT) bytes from a string to compute its hash*/
 #define STR_HASHLIMIT		5
 
-#define LTABLE_NUM      1
-#define LTABLE_FLOAT    2
-#define LTABLE_STRING   3
+union ltable_Hash {
+    double f;
+    const void *p;
+    long int i;
+    uint8_t l_p[4];
+};
 
 struct ltable_value {
     bool setted;
     char v[1];
     /* follow vmemsz space*/
-};
-
-struct ltable_key {
-    int type;
-    union {
-        double f;
-        char*  p;
-    } v;
 };
 
 struct ltable_node {
@@ -73,6 +69,12 @@ struct ltable {
 #define inarray(t, idx) ((idx)>=0 && (idx) < (t)->sizearray)
 
 
+/*
+** {=============================================================
+** Pool
+** ==============================================================
+*/
+
 static void
 pool_init(struct pool *p) {
     p->node = NULL;
@@ -81,36 +83,65 @@ pool_init(struct pool *p) {
 
 static void*
 pool_alloc(struct pool *p, size_t sz) {
-    struct pool_node * node = p->freenode;
-    while (node) {
-        if (node->nodesz >= sz)
-            return node+1;
-        node = node->next;
+    struct pool_node **np = &p->freenode;
+    struct pool_node *n = NULL;
+    while (*np) {
+        if ((*np)->nodesz >= sz) {
+            n = *np;
+            *np = (*np)->next;
+            break;
+        }
+        np = &(*np)->next;
     }
-    if (sz < SHORTSTR_LEN) sz = SHORTSTR_LEN;
-    node = (struct pool_node*)malloc(sz + sizeof(struct pool_node));
-    node->nodesz = sz;
-    node->next = p->freenode;
-    if (p->freenode) p->freenode->prev = node;
-    p->freenode = node;
-    return node+1;
+    if (!n) {
+        if (sz < SHORTSTR_LEN) sz = SHORTSTR_LEN;
+        n = (struct pool_node*)malloc(sz + sizeof(struct pool_node));
+        n->nodesz = sz;
+    }
+    n->next = p->node;
+    p->node = n;
+    return n+1;
 }
 
 static void
 pool_free(struct pool *p, struct pool_node *node) {
-    node->prev->next = node->next;
-    node->next->prev = node->prev;
+    struct pool_node **np = &p->node;
+    node--;
+
+    while(*np) {
+        if (*np == node) {
+            *np = (*np)->next;
+            break;
+        }
+        np = &(*np)->next;
+    }
+
     node->next = p->freenode;
     p->freenode = node;
 }
 
 static void
 pool_release(struct pool *p) {
+    struct pool_node *nextn;
     struct pool_node *n = p->node;
-    while(n) free(n);
+    while(n) {
+        nextn = n->next;
+        free(n);
+        n = nextn;
+    }
     n = p->freenode;
-    while(n) free(n);
+    while(n) {
+        nextn = n->next;
+        free(n);
+        n = nextn;
+    }
 }
+
+
+/*
+** }=============================================================
+*/
+
 
 static void
 _rehash(struct ltable* t, const struct ltable_key *ek);
@@ -133,16 +164,31 @@ _ceillog2 (unsigned int x) {
   return l + log_2[x];
 }
 
+void
+_cpykey(struct ltable *t, struct ltable_key *dest, const struct ltable_key *src) {
+    *dest = *src;
+    if (dest->type == LTABLE_KEYSTR) {
+        size_t l = strlen(src->v.s)+1;
+        char *sp = pool_alloc(&t->pool, l);
+        memcpy(sp, src->v.s, l);
+        dest->v.s = sp;
+    }
+}
+
 bool
 _eqkey(const struct ltable_key *key, const struct ltable_key *nkey) {
     if (key->type != nkey->type)
         return false;
 
     switch (key->type) {
-    case LTABLE_STRING:
-        return !strcmp(key->v.p, nkey->v.p);
-    default:
+    case LTABLE_KEYSTR:
+        return !strcmp(key->v.s, nkey->v.s);
+    case LTABLE_KEYINT:
+        return key->v.i == nkey->v.i;
+    case LTABLE_KEYNUM:
         return key->v.f == nkey->v.f;
+    default:                    /* keyobj */
+        return key->v.p == nkey->v.p;
     }
 }
 
@@ -157,11 +203,9 @@ _strhash (const char *str, unsigned int seed) {
     return h;
 }
 
-union num_Cast { double l_d; uint32_t l_p[2];};
 unsigned int
-_numhash (double n) {
-    union num_Cast u = {.l_d = n + 1.0};/* avoid -0 */
-    int i = u.l_p[0] + u.l_p[1];
+_numhash (union ltable_Hash *u) {
+    int i = u->l_p[0] + u->l_p[1] + u->l_p[2] + u->l_p[3];
 
     if (i < 0) {
         if (((unsigned int)i) == 0u - i)  /* use unsigned to avoid overflows */
@@ -177,33 +221,55 @@ _numhash (double n) {
 */
 static int
 arrayindex (const struct ltable_key *key) {
-  if (key->type == LTABLE_NUM) {
-    double n = (double)key->v.f;
-    int k = (int)n;
-    if (k == n)
-      return k - 1;             /* !! CANNOT FIGURE OUT WHY */
+  if (key->type == LTABLE_KEYINT) {
+      return key->v.i;
   }
   return -1;  /* `key' did not match some condition */
 }
 
 static struct ltable_node *
 mainposition(struct ltable* t, const struct ltable_key* key) {
-    switch (key->type) {
-    case LTABLE_NUM:
-        return hashnode(t, _numhash(key->v.f));
-    default:
-        return hashnode(t, _strhash(key->v.p, t->seed));
+    unsigned int h;
+    if (key->type == LTABLE_KEYSTR)
+        h = _strhash(key->v.s, t->seed);
+    else {
+        union ltable_Hash u;
+        memset(&u, 0, sizeof(u));
+
+        switch(key->type) {
+        case LTABLE_KEYNUM:
+            u.f = key->v.f; break;
+        case LTABLE_KEYINT:
+            u.i = key->v.i; break;
+        default:                /* LTABLE_KEYOBJ  */
+            u.p = key->v.p; break;
+        }
+
+        h = _numhash(&u);
     }
+    return hashnode(t, h);
 }
 
 static struct ltable_node*
 _getfreepos(struct ltable* t) {
     while (t->lastfree > t->node) {
         t->lastfree--;
-        if (!t->lastfree->value.setted)
+        if (!isnil(t->lastfree->value))
             return t->lastfree;
     }
     return NULL;  /* could not find a free place */
+}
+
+static struct ltable_node *
+_hashget(struct ltable* t, const struct ltable_key * key) {
+    struct ltable_node *node = mainposition(t, key);
+    while (node) {
+        if (!isnil(node->value) && _eqkey(&node->key, key))
+            break;
+        else
+            node = gnext(node);
+    }
+    return node;
 }
 
 static struct ltable_value *
@@ -214,18 +280,12 @@ _get(struct ltable* t, const struct ltable_key * key) {
         return isnil(*val) ? NULL : val;
     }
 
-    struct ltable_node *node = mainposition(t, key);
-    while (node) {
-        if (!isnil(node->value) && _eqkey(&node->key, key))
-            break;
-        else
-            node = gnext(node);
-    }
-    return node ? &node->value : NULL;
+    struct ltable_node *node = _hashget(t, key);
+    return node ? &node->value : NULL;    
 }
 
 static struct ltable_value *
-_set(struct ltable* t, struct ltable_key *key) {
+_set(struct ltable* t, const struct ltable_key *key) {
     struct ltable_value *val;
     int idx = arrayindex(key);
     if (inarray(t, idx)) {  /* in array part? */
@@ -255,7 +315,7 @@ _set(struct ltable* t, struct ltable_key *key) {
                 mp = freen;
             }
         }
-        mp->key = *key;
+        _cpykey(t, &mp->key, key);
         val = &mp->value;
     }
 
@@ -293,13 +353,13 @@ computesizes (int nums[], int *narray) {
 
 static int
 countint (const struct ltable_key *key, int *nums) {
-  int k = arrayindex(key);
-  if (0 < k && k <= MAXASIZE) {  /* is `key' an appropriate array index? */
-    nums[_ceillog2(k)]++;  /* count as such */
-    return 1;
-  }
-  else
-    return 0;
+    int k = arrayindex(key);
+    if (0 <= k && k <= MAXASIZE) {  /* is `key' an appropriate array index? */
+        nums[k==0 ? 0 : _ceillog2(k)]++;  /* count as such */
+        return 1;
+    }
+    else
+        return 0;
 }
 
 static int
@@ -307,7 +367,7 @@ numusearray (const struct ltable *t, int *nums) {
     int lg;
     int ttlg;  /* 2^lg */
     int ause = 0;  /* summation of `nums' */
-    int i = 1;  /* count to traverse all array keys */
+    int i = 0;  /* count to traverse all array keys. 0-based */
     for (lg=0, ttlg=1; lg<=MAXBITS; lg++, ttlg*=2) {  /* for each slice */
         int lc = 0;  /* counter */
         int lim = ttlg;
@@ -317,8 +377,8 @@ numusearray (const struct ltable *t, int *nums) {
                 break;  /* no more elements to count */
         }
         /* count elements in range (2^(lg-1), 2^lg] */
-        for (; i <= lim; i++) {
-            if (!isnil(t->array[i-1]))
+        for (; i < lim; i++) {
+            if (!isnil(t->array[i]))
                 lc++;
         }
         nums[lg] += lc;
@@ -371,7 +431,8 @@ _resize(struct ltable *t, int nasize, int nhsize) {
         /* re-insert elements from vanishing slice */
         for (i=nasize; i<oldasize; i++) { /* insert extra array part to hash */
             if (!isnil(t->array[i])) {
-                struct ltable_key nkey = {.type=LTABLE_NUM, .v = {.f = i}};
+                struct ltable_key nkey;
+                ltable_intkey(&nkey, i);
                 struct ltable_value *val = _set(t, &nkey);
                 *val = t->array[i];
             }
@@ -422,42 +483,6 @@ _rehash(struct ltable* t, const struct ltable_key *ek) {
 */
 
 
-
-void*
-ltable_numget(struct ltable *t, double key) {
-    struct ltable_key nkey = {.type=LTABLE_NUM, .v = {.f = key}};
-    struct ltable_value *val = _get(t, &nkey);
-    return val->v;
-}
-
-void*
-ltable_numset(struct ltable* t, double key) {
-    struct ltable_key nkey = {.type=LTABLE_NUM, .v = {.f = key}};
-    struct ltable_value *val = _get(t, &nkey);
-    if (!val) val = _set(t, &nkey);
-    return val->v;
-}
-
-void*
-ltable_strget(struct ltable *t, const char* key) {
-    struct ltable_key nkey = {.type=LTABLE_STRING, .v = {.p = key}};
-    struct ltable_value * val = _get(t, &nkey);
-    return val->v;
-}
-
-void*
-ltable_strset(struct ltable* t, const char* key) {
-    struct ltable_key nkey = {.type=LTABLE_STRING, .v = {.p = key}};
-    struct ltable_value *val = _get(t, &nkey);
-    if (!val) {
-        size_t keylen = strlen(key)+1;
-        nkey.v.p = pool_alloc(&t->pool, keylen);
-        memcpy(nkey.v.p, key, keylen);
-        val = _set(t, &nkey);
-    }
-    return val->v;
-}
-
 struct ltable*
 ltable_create(size_t vmemsz, unsigned int seed) {
     struct ltable* t = malloc(sizeof(struct ltable));
@@ -476,8 +501,105 @@ ltable_create(size_t vmemsz, unsigned int seed) {
 }
 
 void
+ltable_release(struct ltable *t) {
+    free(t->node);
+    free(t->array);
+    pool_release(&t->pool);
+}
+
+void
 ltable_resize(struct ltable *t, int nasize, int nhsize) {
     _resize(t, nasize, nhsize);
+}
+
+void*
+ltable_get(struct ltable *t, const struct ltable_key* key) {
+    struct ltable_value *val = _get(t, key);
+    return val->v;
+}
+
+void*
+ltable_set(struct ltable* t, const struct ltable_key* key) {
+    struct ltable_value *val = _get(t, key);
+    if (!val) val = _set(t, key);
+    return val->v;
+}
+
+void
+ltable_del(struct ltable* t, const struct ltable_key* key) {
+    if (key->type == LTABLE_KEYSTR) {
+        struct ltable_node *node = _hashget(t, key);
+        if (node) {
+            node->value.setted = false;
+            /* free string key */
+            pool_free(&t->pool, (struct pool_node*)node->key.v.s);
+            node->key.v.s = NULL;
+        }
+    } else {
+        struct ltable_value *val = _get(t, key);
+        if (val) 
+            val->setted = false;
+    }
+}
+
+void *
+ltable_next(struct ltable *t, unsigned int *ip, struct ltable_key **keyp) {
+    int nsz = sizenode(t);
+    struct ltable_value * val = NULL;
+    if (keyp) *keyp = NULL;
+
+    for (;*ip < t->sizearray; (*ip)++) { /* search array part */
+        if (!isnil(t->array[*ip])) {
+            val = &t->array[*ip];
+            if (keyp) {
+                (*keyp)->type = LTABLE_KEYINT;
+                (*keyp)->v.i = *ip;
+            }
+            break;
+        }
+    }
+    if (*ip >= t->sizearray)
+        for ((*ip) -= t->sizearray ; *ip < nsz; (*ip)++) { /* search hash part */
+            struct ltable_node * node = &t->node[*ip];
+            if (!isnil(node->value)) {
+                if (keyp) *keyp = &node->key;
+                val = &node->value;
+                break;
+            }
+        }
+
+    (*ip)++;
+    return val ? val->v : NULL;
+}
+
+inline struct ltable_key*
+ltable_numkey(struct ltable_key *key, double k) {
+    key->type = LTABLE_KEYNUM;
+    key->v.f  = k;
+
+    return key;
+}
+
+inline struct ltable_key*
+ltable_strkey(struct ltable_key *key, const char* k) {
+    key->type = LTABLE_KEYSTR;
+    key->v.s  = k;
+
+    return key;
+}
+
+inline struct ltable_key*
+ltable_intkey(struct ltable_key *key, long int k) {
+    key->type = LTABLE_KEYINT;
+    key->v.i  = k;
+    return key;
+}
+
+inline struct ltable_key*
+ltable_objkey(struct ltable_key *key, void *p) {
+    key->type = LTABLE_KEYOBJ;
+    key->v.p  = p;
+    return key;
 }
 
 /* end of ltable.c */
