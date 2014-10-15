@@ -8,7 +8,7 @@ A C hash lib inspired by Lua's Table
 ```
 create a table instance.
 
-`seed` is the random seed you supply to `ltable` to gen hash value, `LTABLE_SEED` is used when 0 supplied.
+`seed` is used to gen hash value, `LTABLE_SEED` is used when 0 supplied.
 
 
 `vmemsz` is the maximum memory size your table value can occupy. If you have multiple types of table value, I recommend you to use a tag union to group them, for example:
@@ -60,7 +60,7 @@ returns the value addr, or `NULL` when no more item to iterate.
 
 `ip` is the iter handle, which must initialize to 0 at beginning of iteration.
 
-`key` is used to fetch to corresponding key. set it to `NULL` if you don't need it.
+`key` is used to fetch corresponding key. set it to `NULL` if you don't need it.
 
 ## EXAMPLES
 see `test.c`
