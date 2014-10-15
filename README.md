@@ -62,3 +62,7 @@ returns the value addr, or `NULL` when no more item to iterate.
 
 `key` is used to fetch to corresponding key. set it to `NULL` if you don't need it.
 
+## EXAMPLES
+see `test.c`
+
+
