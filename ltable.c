@@ -342,7 +342,7 @@ computesizes (int nums[], int *narray) {
     int a = 0;  /* number of elements smaller than 2^i */
     int na = 0;  /* number of elements to go to array part */
     int n = 0;  /* optimal size for array part */
-    for (i = 0, twotoi = 1; twotoi/2 < *narray; i++, twotoi *= 2) {
+    for (i = 0, twotoi = 1;i<=MAXBITS; i++, twotoi *= 2) {
         if (nums[i] > 0) {
             a += nums[i];
             if (a > twotoi/2) {  /* more than half elements present? */
@@ -350,9 +350,9 @@ computesizes (int nums[], int *narray) {
                 na = a;  /* all elements smaller than n will go to array part */
             }
         }
-        if (a == *narray) break;  /* all elements already counted */
+        if (*narray == a) break;
     }
-    *narray = n+1;
+    *narray = n;
     assert(*narray/2 <= na && na <= *narray);
     return na;
 }
@@ -361,8 +361,8 @@ computesizes (int nums[], int *narray) {
 static int
 countint (const struct ltable_key *key, int *nums) {
     int k = arrayindex(key);
-    if (0 < k && k <= MAXASIZE) {  /* is `key' an appropriate array index? */
-        nums[_ceillog2(k)]++;  /* count as such */
+    if (0 <= k && k <= MAXASIZE) {  /* is `key' an appropriate array index? */
+        nums[k==0 ? 0 : _ceillog2(k)+1]++;  /* count as such */
         return 1;
     }
     else
@@ -374,18 +374,18 @@ numusearray (const struct ltable *t, int *nums) {
     int lg;
     int ttlg;  /* 2^lg */
     int ause = 0;  /* summation of `nums' */
-    int i = 1;  /* count to traverse all array keys. 0-based */
+    int i = 0;  /* count to traverse all array keys. 0-based */
     for (lg=0, ttlg=1; lg<=MAXBITS; lg++, ttlg*=2) {  /* for each slice */
         int lc = 0;  /* counter */
         int lim = ttlg;
         if (lim > t->sizearray) {
             lim = t->sizearray;  /* adjust upper limit */
-            if (i > lim)
+            if (i >= lim)
                 break;  /* no more elements to count */
         }
-        /* count elements in range (2^(lg-1), 2^lg] */
-        for (; i <= lim; i++) {
-            if (!isnil(t->array[i-1]))
+        /* count elements in range [2^(lg-1), 2^lg) */
+        for (; i < lim; i++) {
+            if (!isnil(t->array[i]))
                 lc++;
         }
         nums[lg] += lc;
@@ -469,7 +469,7 @@ _resize(struct ltable *t, int nasize, int nhsize) {
 static void
 _rehash(struct ltable* t, const struct ltable_key *ek) {
     int nasize, na;
-    int nums[MAXBITS+1];  /* nums[i] = number of keys with 2^(i-1) < k <= 2^i */
+    int nums[MAXBITS+1];  /* nums[i] = number of keys with 2^(i-1) <= k < 2^i */
     int i;
     int totaluse;
     for (i=0; i<=MAXBITS; i++) nums[i] = 0;  /* reset counts */
