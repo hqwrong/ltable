@@ -500,7 +500,7 @@ ltable_create(size_t vmemsz, unsigned int seed) {
     t->lastfree = NULL;
     t->sizearray = 0;
     t->lsizenode = 0;          /* log2 of size of `node' array */
-    t->seed = seed == 0 ? 8348129 : seed;
+    t->seed = seed == 0 ? LTABLE_SEED : seed;
     pool_init(&t->pool);
 
     _resize(t, 0, 1);
