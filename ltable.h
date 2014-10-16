@@ -33,6 +33,7 @@ void* ltable_next(struct ltable *t, unsigned int *ip, struct ltable_key *key);
 
 void* ltable_get(struct ltable* t, const struct ltable_key* key);
 void* ltable_set(struct ltable* t, const struct ltable_key* key);
+void* ltable_getn(struct ltable* t, int i);
 void  ltable_del(struct ltable* t, const struct ltable_key* key);
 
 struct ltable_key* ltable_numkey(struct ltable_key *key, double k);

@@ -2,37 +2,55 @@
 #include "ltable.h"
 
 static void
+_dumparray(struct ltable *t) {
+    unsigned int i = 0;
+    int *p;
+    printf("iter array:\n");
+    while (p = ltable_getn(t, i)) {
+        printf("\t%d: %d\n", i, *p);
+        i++;
+    }
+}
+
+static void
 _dump(struct ltable *t) {
     unsigned int i = 0;
     int *p;
     struct ltable_key kp;
+    
+    printf("iter table:\n");
+    i = 0;
     while (p = ltable_next(t, &i, &kp)) {
         switch (kp.type) {
         case LTABLE_KEYNUM:
-            printf("key=%.3f, val=%d\n", kp.v.f, *p);
+            printf("\tkey=%.3f, val=%d\n", kp.v.f, *p);
             break;
         case LTABLE_KEYINT:
-            printf("key=%d, val=%d\n", kp.v.i, *p);
+            printf("\tkey=%d, val=%d\n", kp.v.i, *p);
             break;
         case LTABLE_KEYSTR:
-            printf("key=['%s'], val=%d\n", kp.v.s, *p);
+            printf("\tkey=['%s'], val=%d\n", kp.v.s, *p);
             break;
         case LTABLE_KEYOBJ:
-            printf("key=[%p], val=%d\n", kp.v.p, *p);
+            printf("\tkey=[%p], val=%d\n", kp.v.p, *p);
             break;
         default :
-            printf("error type %d\n", kp.type);
+            printf("\terror type %d\n", kp.type);
         }
     }
-    printf("===========\n");
 }
 
 int
 main() {
     struct ltable_key key;
-    struct ltable* t = ltable_create(sizeof(int), 0);
+    struct ltable* t;
     int *p;
 
+    /*****************************/
+    /* construct a simple table*/
+    /*****************************/
+
+    t = ltable_create(sizeof(int), 0);
     /* t["foo"] = 12 */
     p = ltable_set(t, ltable_strkey(&key, "foo"));
     *p = 12;
@@ -41,19 +59,31 @@ main() {
     p = ltable_set(t, ltable_numkey(&key, 3.5));
     *p = 13;
 
-    /* t[1] = 14 */
-    p = ltable_set(t, ltable_intkey(&key, 1));
-    *p = 14;
-
-    /* t[&obj] = 15 */
+    /* t[&obj] = 20 */
     int obj = 0;
     p = ltable_set(t, ltable_objkey(&key, &obj));
-    *p = 15;
-    
+    *p = 20;
+
+    int i;
+    for(i=0;i<10;i++) {
+        p = ltable_set(t, ltable_intkey(&key, i));
+        *p = i+1;
+    }
+
+    _dumparray(t);
+
+    for(i=9;i>=0;i--){
+        ltable_del(t, ltable_intkey(&key, i));
+    }
+
+    p = ltable_set(t, ltable_strkey(&key, "bar"));
+    *p = 99;
+    p = ltable_set(t, ltable_strkey(&key, "hello,world"));
+    *p = 100;
+    p = ltable_set(t, ltable_strkey(&key, "hqwrong.github.io"));
+    *p = 101;
+
     _dump(t);
 
-    struct ltable* t2 = ltable_create(sizeof(struct ltable*), 0);
-    struct ltable** tp = ltable_set(t2, ltable_strkey(&key, "table"));
-    *tp = t;
-    printf("t2['table'] = %p\n", *((struct ltable**)ltable_get(t2, &key)));
+    ltable_release(t);
 }
